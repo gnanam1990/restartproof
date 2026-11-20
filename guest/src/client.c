@@ -91,7 +91,9 @@ int main(int argc, char **argv) {
             if (found == 0 && a == 0) break;   /* first attempt: any gen */
             rp_msleep(50);
         }
-        if (found != 0) {
+        if (found != 0 || (a > 0 && gen == last_gen)) {
+            /* no usable endpoint, or only the previous (dying)
+             * generation's socket — never send to a stale worker */
             used += snprintf(attempts_json + used,
                 sizeof attempts_json - used,
                 "%s{\"attemptId\":\"%s\",\"generation\":-1,"
@@ -112,12 +114,21 @@ int main(int argc, char **argv) {
                 sizeof req.payload_digest - 1);
         strncpy(req.payload_json, payload, sizeof req.payload_json - 1);
 
+        /* the registry can name a generation whose worker has not bound
+         * its listener yet (spawn vs. listen race) — retry the connect,
+         * bounded, before declaring CONNECT_FAILED */
         rp_conn_t *c = NULL;
         int sr;
         rp_msg_reply_t resp;
         memset(&resp, 0, sizeof resp);
         resp.receipt_seq = -1;
-        if (rp_connect(ep, &c) != 0) {
+        long long cdeadline = rp_now_ms() + 3000;
+        if (cdeadline > deadline) cdeadline = deadline;
+        while (rp_connect(ep, &c) != 0) {
+            if (rp_now_ms() >= cdeadline) break;
+            rp_msleep(50);
+        }
+        if (c == NULL) {
             sr = RP_SEND_CONNECT_FAILED;
         } else {
             sr = rp_request(c, &req, &resp, timeout_ms);

@@ -63,9 +63,11 @@ def _journal(seal=None, barrier=True, restart=True, hold=True):
     return j
 
 
-def _facts(attempts=2):
+def _facts(results=("LOST_REPLY", "OK")):
     return [{"kind": "client.report",
-             "payload": {"attempts": [{"i": n} for n in range(attempts)]}}]
+             "payload": {"attempts": [
+                 {"attemptId": f"a-{n + 1}", "sendResult": r}
+                 for n, r in enumerate(results)]}}]
 
 
 def _row(seq, op="op-1", attempt="a-1", content="same"):
@@ -171,6 +173,38 @@ class TestT010EvidenceIntegrity(unittest.TestCase):
         out = verdict.reduce_verdict(
             _run(), _journal(seal=None), _facts(), [])
         self.assertEqual(out["verdict"]["code"], verdict.VERDICT_REVIEW)
+
+    def test_unmeasured_retry_cannot_pass(self):
+        # CONNECT_FAILED means the retry never reached a worker — one
+        # sealed effect is then incomplete evidence, never a measured
+        # PASS (regression: a failed second attempt raced the seal)
+        out = verdict.reduce_verdict(
+            _run(), _journal(seal=_seal()),
+            _facts(("LOST_REPLY", "CONNECT_FAILED")), [_row(1)])
+        v = out["verdict"]
+        self.assertEqual(v["code"], verdict.VERDICT_REVIEW)
+        self.assertTrue(v["incomplete"])
+        self.assertIn("never reached", v["reason"])
+
+    def test_no_endpoint_attempt_cannot_fail_missing(self):
+        # NO_ENDPOINT means nothing was delivered; an empty sealed
+        # interval cannot claim a measured missing-effect failure either
+        out = verdict.reduce_verdict(
+            _run(), _journal(seal=_seal(empty=True, count=0)),
+            _facts(("LOST_REPLY", "NO_ENDPOINT")), [])
+        v = out["verdict"]
+        self.assertEqual(v["code"], verdict.VERDICT_REVIEW)
+
+    def test_unmeasured_attempt_under_duplicate_stays_fail(self):
+        # measured extra rows still dominate: two trustworthy distinct
+        # effects fail duplicate even if a later attempt never landed
+        rows = [_row(1), _row(2, attempt="a-2")]
+        out = verdict.reduce_verdict(
+            _run(), _journal(seal=_seal(count=2)),
+            _facts(("LOST_REPLY", "CONNECT_FAILED")), rows)
+        v = out["verdict"]
+        self.assertEqual(v["code"], verdict.VERDICT_FAIL_DUPLICATE)
+        self.assertTrue(v["incomplete"])
 
 
 @unittest.skipUnless(_HAVE_CC, "no host C compiler")

@@ -49,6 +49,16 @@ def _row_content(row: dict) -> str:
                        if k not in ("received_utc", "_source")})
 
 
+# A send result only counts as an attempt against the measured boundary
+# when the delivery provably entered the transport: OK (reply received),
+# LOST_REPLY (effect committed, reply lost — the case under test) and
+# ETIMEDOUT (request sent, reply wait expired). CONNECT_FAILED,
+# NO_ENDPOINT and TRANSPORT_ERR mean the delivery never reached a
+# worker — that is a setup outcome, not a measurement, and it can never
+# support PASS or a measured missing-verdict.
+_MEASURED_SEND_RESULTS = {"OK", "LOST_REPLY", "ETIMEDOUT"}
+
+
 def dedup_observations(observations: list[dict]) -> dict:
     """Group observations by (sinkId, runId, seq).
 
@@ -114,6 +124,8 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
     report_fact = next((f["payload"] for f in facts
                         if f["kind"] == "client.report"), None)
     attempts = (report_fact or {}).get("attempts", [])
+    unmeasured = [a for a in attempts
+                  if a.get("sendResult") not in _MEASURED_SEND_RESULTS]
 
     incomplete_reasons = []
     if not coverage_complete:
@@ -123,6 +135,10 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
             f"drained={seal.get('writerDrained')}")
     if hold_required and not steps_ok:
         incomplete_reasons.append("required barrier/restart not observed")
+    for a in unmeasured:
+        incomplete_reasons.append(
+            f"attempt {a.get('attemptId', '?')} never reached the "
+            f"measured boundary ({a.get('sendResult', 'no result')})")
     if conflicted:
         incomplete_reasons.append(
             f"{len(conflicted)} conflicting receipt cop"
@@ -135,7 +151,8 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                               for k, v in conflicted.items()},
                "duplicateReads": ded["copies"],
                "seal": seal, "coverageComplete": coverage_complete,
-               "stepsOk": steps_ok, "attempts": attempts}}
+               "stepsOk": steps_ok, "attempts": attempts,
+               "unmeasuredAttempts": len(unmeasured)}}
 
     def verdict(code, reason, incomplete=False):
         out["verdict"] = {"code": code, "reason": reason,
@@ -158,6 +175,12 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                     VERDICT_REVIEW,
                     "conflicting receipt copies could hide additional "
                     f"effects for {op['opId']}; verdict compromised", True)
+            if unmeasured:
+                return verdict(
+                    VERDICT_REVIEW,
+                    "effect count matches but a retry attempt never "
+                    "reached the measured boundary: "
+                    + "; ".join(incomplete_reasons), True)
             if coverage_complete and steps_ok:
                 return verdict(
                     VERDICT_PASS,
@@ -175,7 +198,7 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                     "no attributable effects but conflicting copies were "
                     "quarantined; missingness cannot be claimed", True)
             if (seal and seal.get("empty") and coverage_complete
-                    and attempts):
+                    and attempts and not unmeasured):
                 return verdict(
                     VERDICT_FAIL_MISSING,
                     "execution produced zero attributable effects inside "
