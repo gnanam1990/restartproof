@@ -145,9 +145,16 @@ def _doctor(args) -> int:
 def _sink(args) -> int:
     from . import sink as sinkmod
     if args.sink_cmd == "serve":
+        # Diagnostic backstop: if startup blocks anywhere (dispatch, DB
+        # init, socket bind), dump a traceback instead of hanging mute.
+        import faulthandler
+        faulthandler.dump_traceback_later(60, exit=True)
+        print("sink: dispatch reached", file=sys.stderr, flush=True)
         db = args.db or os.path.join(args.home, "sink.db")
         service = sinkmod.SinkService(db)
+        print("sink: ledger ready", file=sys.stderr, flush=True)
         server = service.make_server(args.host, args.port)
+        print("sink: server bound", file=sys.stderr, flush=True)
         port = server.server_address[1]
         sinkmod.write_service_info(args.home, {
             "pid": os.getpid(), "port": port, "sinkId": service.sink_id,
@@ -155,6 +162,7 @@ def _sink(args) -> int:
             "adapterVersion": sinkmod.ADAPTER_VERSION})
         print(f"receipt sink {service.sink_id} serving on "
               f"{args.host}:{port} (db {db})", flush=True)
+        faulthandler.cancel_dump_traceback_later()
 
         import signal as _sig
         import threading as _th

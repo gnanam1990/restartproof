@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .errors import UsageError
@@ -260,6 +261,23 @@ class Ledger:
             return seal
 
 
+class _SinkHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the getfqdn() lookup in server_bind.
+
+    HTTPServer.server_bind() calls socket.getfqdn(host), which issues a
+    reverse-DNS query that can stall for tens of seconds on hosts with no
+    resolvable name (observed: detached serve child hanging on macOS CI).
+    server_name is only used for self-referential URLs, which this API
+    never emits — the numeric bind address is sufficient.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 class SinkReject(Exception):
     def __init__(self, status: int, code: str, reason: str):
         super().__init__(reason)
@@ -468,7 +486,7 @@ class SinkService:
             do_GET = _route
             do_POST = _route
 
-        server = ThreadingHTTPServer((host, port), Handler)
+        server = _SinkHTTPServer((host, port), Handler)
         server.daemon_threads = True
         return server
 
