@@ -23,7 +23,7 @@ evidence.
 |---|---|
 | Scenario contracts / run store | Implemented (M01) |
 | Receipt sink | Implemented (M02) |
-| QNX 8 IPC harness | Source target; real QNX guest run **unverified** (M03) |
+| IPC harness | Implemented + host-tested; real QNX guest run **unverified** (M03) |
 | Runner / retry | Pending (M04) |
 | Verdict / evidence | Pending (M05) |
 | Lab console | Pending (M06) |
@@ -49,6 +49,7 @@ python3 -m rp manifest run-…
 python3 -m rp sink start                  # receipt sink service (per home)
 python3 -m rp sink status                 # health + adapter version
 python3 -m rp sink stop
+make -C guest/build                       # portable harness (HOST_FIXTURE)
 python3 -m unittest discover -s tests -v  # test suite
 ```
 
