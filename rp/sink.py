@@ -519,15 +519,20 @@ def read_service_info(home: str) -> dict | None:
         return None
 
 
-def sink_alive(info: dict | None) -> bool:
-    if not info:
-        return False
+def sink_health(info: dict | None) -> tuple[bool, str]:
+    """Probe the service; returns (alive, detail-for-diagnostics)."""
+    if not info or not info.get("port"):
+        return False, "no service info"
     try:
-        status, _ = http_json(f"http://127.0.0.1:{info['port']}/v1/health",
-                              timeout=2.0)
-        return status == 200
-    except OSError:
-        return False
+        status, body = http_json(
+            f"http://127.0.0.1:{info['port']}/v1/health", timeout=2.0)
+        return status == 200, f"http {status}"
+    except Exception as exc:
+        return False, repr(exc)
+
+
+def sink_alive(info: dict | None) -> bool:
+    return sink_health(info)[0]
 
 
 def _sink_log_tail(home: str, lines: int = 15) -> str:
@@ -553,25 +558,32 @@ def ensure_sink(home: str, timeout_s: float = 30.0) -> dict:
     log_path = os.path.join(home, "sink.log")
     log = open(log_path, "ab")
     try:
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "rp", "--home", home,
+            [sys.executable, "-u", "-m", "rp", "--home", home,
              "sink", "serve", "--port", "0"],
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            env=env, start_new_session=True)
     finally:
         log.close()
     deadline = time.monotonic() + timeout_s
+    last_err = "no probe yet"
     while time.monotonic() < deadline:
         info = read_service_info(home)
-        if info and info.get("pid") == proc.pid and sink_alive(info):
-            return info
+        if info and info.get("pid") == proc.pid:
+            alive, last_err = sink_health(info)
+            if alive:
+                return info
         if proc.poll() is not None:
             raise UsageError(
                 f"sink service exited early (rc={proc.returncode}); "
                 f"log tail:\n{_sink_log_tail(home)}")
         time.sleep(0.05)
-    raise UsageError(f"sink service did not come up within {timeout_s}s; "
-                     f"log tail:\n{_sink_log_tail(home)}")
+    raise UsageError(
+        f"sink service did not come up within {timeout_s}s; "
+        f"sink.json={info!r}; last health probe: {last_err}; "
+        f"log tail:\n{_sink_log_tail(home)}")
 
 
 def stop_sink(home: str) -> bool:
