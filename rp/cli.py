@@ -142,6 +142,60 @@ def _doctor(args) -> int:
     return 0 if ok else 3
 
 
+def _sink(args) -> int:
+    from . import sink as sinkmod
+    if args.sink_cmd == "serve":
+        # Diagnostic backstop: if startup blocks anywhere (dispatch, DB
+        # init, socket bind), dump a traceback instead of hanging mute.
+        import faulthandler
+        faulthandler.dump_traceback_later(60, exit=True)
+        print("sink: dispatch reached", file=sys.stderr, flush=True)
+        db = args.db or os.path.join(args.home, "sink.db")
+        service = sinkmod.SinkService(db)
+        print("sink: ledger ready", file=sys.stderr, flush=True)
+        server = service.make_server(args.host, args.port)
+        print("sink: server bound", file=sys.stderr, flush=True)
+        port = server.server_address[1]
+        sinkmod.write_service_info(args.home, {
+            "pid": os.getpid(), "port": port, "sinkId": service.sink_id,
+            "adminToken": service.admin_token, "dbPath": db,
+            "adapterVersion": sinkmod.ADAPTER_VERSION})
+        print(f"receipt sink {service.sink_id} serving on "
+              f"{args.host}:{port} (db {db})", flush=True)
+        faulthandler.cancel_dump_traceback_later()
+
+        import signal as _sig
+        import threading as _th
+        def _term(*_):
+            # shutdown() must not run on the serve_forever thread.
+            _th.Thread(target=server.shutdown, daemon=True).start()
+        _sig.signal(_sig.SIGTERM, _term)
+        server.serve_forever()
+        server.server_close()
+        service.ledger.close()
+        return 0
+    if args.sink_cmd == "start":
+        info = sinkmod.ensure_sink(args.home)
+        print(f"receipt sink {info['sinkId']} on port {info['port']} "
+              f"(pid {info['pid']})")
+        return 0
+    if args.sink_cmd == "stop":
+        stopped = sinkmod.stop_sink(args.home)
+        print("sink stopped" if stopped else "no sink running")
+        return 0
+    if args.sink_cmd == "status":
+        info = sinkmod.read_service_info(args.home)
+        if sinkmod.sink_alive(info):
+            status, health = sinkmod.http_json(
+                f"http://127.0.0.1:{info['port']}/v1/health")
+            print(json.dumps(health, indent=2))
+        else:
+            print("no live sink for this home")
+            return 2
+        return 0
+    raise UsageError(f"unknown sink command {args.sink_cmd}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="rp",
@@ -173,6 +227,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("doctor", help="check toolchain and target access")
     sp.set_defaults(func=_doctor)
+
+    sp = sub.add_parser("sink", help="receipt sink service lifecycle")
+    sp.add_argument("sink_cmd",
+                    choices=["serve", "start", "stop", "status"])
+    sp.add_argument("--port", type=int, default=0,
+                    help="serve port (0 = ephemeral, default)")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="bind address; use 0.0.0.0 only when a remote "
+                         "guest must reach the sink")
+    sp.add_argument("--db", default=None,
+                    help="ledger path (default <home>/sink.db)")
+    sp.set_defaults(func=_sink)
 
     return p
 
