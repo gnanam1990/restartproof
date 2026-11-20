@@ -49,6 +49,16 @@ def _row_content(row: dict) -> str:
                        if k not in ("received_utc", "_source")})
 
 
+# A send result only counts as an attempt against the measured boundary
+# when the delivery provably entered the transport: OK (reply received),
+# LOST_REPLY (effect committed, reply lost — the case under test) and
+# ETIMEDOUT (request sent, reply wait expired). CONNECT_FAILED,
+# NO_ENDPOINT and TRANSPORT_ERR mean the delivery never reached a
+# worker — that is a setup outcome, not a measurement, and it can never
+# support PASS or a measured missing-verdict.
+_MEASURED_SEND_RESULTS = {"OK", "LOST_REPLY", "ETIMEDOUT"}
+
+
 def dedup_observations(observations: list[dict]) -> dict:
     """Group observations by (sinkId, runId, seq).
 
@@ -78,12 +88,14 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
     rid = run["run_id"]
     ops = m.get("operations") or []
 
-    if run.get("status") in ("unsupported", "diagnostic") \
+    if run.get("status") in ("unsupported", "diagnostic", "planned") \
             or not m.get("runNonce"):
+        reason = run.get("diagnostic") or (
+            "run never executed — nothing measured"
+            if run.get("status") == "planned"
+            else "run has no pinned manifest")
         return {
-            "verdict": {"code": VERDICT_SETUP,
-                        "reason": run.get("diagnostic")
-                                  or "run has no pinned manifest",
+            "verdict": {"code": VERDICT_SETUP, "reason": reason,
                         "incomplete": False,
                         "exitCode": _EXIT[VERDICT_SETUP]},
             "analysis": {}}
@@ -112,6 +124,8 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
     report_fact = next((f["payload"] for f in facts
                         if f["kind"] == "client.report"), None)
     attempts = (report_fact or {}).get("attempts", [])
+    unmeasured = [a for a in attempts
+                  if a.get("sendResult") not in _MEASURED_SEND_RESULTS]
 
     incomplete_reasons = []
     if not coverage_complete:
@@ -121,6 +135,10 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
             f"drained={seal.get('writerDrained')}")
     if hold_required and not steps_ok:
         incomplete_reasons.append("required barrier/restart not observed")
+    for a in unmeasured:
+        incomplete_reasons.append(
+            f"attempt {a.get('attemptId', '?')} never reached the "
+            f"measured boundary ({a.get('sendResult', 'no result')})")
     if conflicted:
         incomplete_reasons.append(
             f"{len(conflicted)} conflicting receipt cop"
@@ -133,7 +151,8 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                               for k, v in conflicted.items()},
                "duplicateReads": ded["copies"],
                "seal": seal, "coverageComplete": coverage_complete,
-               "stepsOk": steps_ok, "attempts": attempts}}
+               "stepsOk": steps_ok, "attempts": attempts,
+               "unmeasuredAttempts": len(unmeasured)}}
 
     def verdict(code, reason, incomplete=False):
         out["verdict"] = {"code": code, "reason": reason,
@@ -156,6 +175,12 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                     VERDICT_REVIEW,
                     "conflicting receipt copies could hide additional "
                     f"effects for {op['opId']}; verdict compromised", True)
+            if unmeasured:
+                return verdict(
+                    VERDICT_REVIEW,
+                    "effect count matches but a retry attempt never "
+                    "reached the measured boundary: "
+                    + "; ".join(incomplete_reasons), True)
             if coverage_complete and steps_ok:
                 return verdict(
                     VERDICT_PASS,
@@ -173,7 +198,7 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
                     "no attributable effects but conflicting copies were "
                     "quarantined; missingness cannot be claimed", True)
             if (seal and seal.get("empty") and coverage_complete
-                    and attempts):
+                    and attempts and not unmeasured):
                 return verdict(
                     VERDICT_FAIL_MISSING,
                     "execution produced zero attributable effects inside "
@@ -259,6 +284,8 @@ _JOURNAL_ALLOW = {
     "epoch.closed": {"http", "closed", "epoch"},
     "seal.stored": {"http", "seal"},
     "sink.snapshot": {"reachable", "http", "rowCount", "error"},
+    "operate.attached": {"attached", "generation", "ctlPort", "via",
+                         "targetUname", "reason", "status"},
 }
 
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "credential")
@@ -325,6 +352,8 @@ def build_bundle(store, run) -> dict:
     qnx = bool(target.get("qnx"))
     report_fact = next((f["payload"] for f in facts
                         if f["kind"] == "client.report"), None)
+    attached = ((journal.get("operate.attached") or {})
+                .get("state") or {})
 
     bundle = {
         "bundleVersion": BUNDLE_VERSION,
@@ -333,6 +362,16 @@ def build_bundle(store, run) -> dict:
         "runId": rid,
         "manifestDigest": m.get("manifestDigest"),
         "runNonce": m.get("runNonce"),
+        "scenarioId": m.get("scenarioId"),
+        "targetIdentity": {
+            # identity claimed by the guest control plane (uname), not
+            # verified host-side — recorded honestly either way
+            "uname": attached.get("targetUname"),
+            "execution": ("operator-bridge" if attached.get("attached")
+                          else "host-runner"
+                          if "supervisor.started" in journal
+                          else "not-run"),
+        },
         "target": target,
         "provenance": target.get("label") or (
             "qnx" if qnx else "HOST_FIXTURE"),

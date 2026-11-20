@@ -157,6 +157,93 @@ def _report(args) -> int:
     return v["exitCode"]
 
 
+def _effects(args) -> int:
+    """Inspect the run's sink rows — attributed, deduped, conflicted."""
+    from . import verdict as verdict_mod
+    with Store(args.home) as store:
+        run = store.get_run(args.run) or store.get_by_client_key(args.run)
+        if run is None:
+            raise UsageError(f"unknown run {args.run}")
+        journal = store.journal_read(run["run_id"])
+        rows, live = verdict_mod._observations(store, run, journal)
+        ded = verdict_mod.dedup_observations(rows)
+    out = {"runId": run["run_id"], "liveSinkRead": live,
+           "attributable": ded["trustworthy"],
+           "conflicted": {f"{k[0]}:{k[2]}": v
+                          for k, v in ded["conflicted"].items()},
+           "duplicateReadsIgnored": ded["copies"]}
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _operate(args) -> int:
+    """Operator bridge: register a run or drive an attached harness."""
+    from .target import Operator
+    with Store(args.home) as store:
+        run = store.get_run(args.run) or store.get_by_client_key(args.run)
+        if run is None:
+            raise UsageError(f"unknown run {args.run}")
+        op = Operator(args.home, store)
+        if args.register:
+            params = op.register(run)
+            print(f"run {run['run_id']} registered with the receipt sink")
+            print("launch parameters for the target harness:")
+            for k in ("runId", "runNonce", "sinkUrl", "writerToken",
+                      "sinkMode", "opId", "payloadDigest", "maxAttempts"):
+                print(f"  {k}: {params[k]}")
+            print("then: rp operate " + run["run_id"]
+                  + " --ctl <target-host>:<ctl-port>")
+            return 0
+        if not args.ctl:
+            raise UsageError(
+                "operate needs --ctl HOST:PORT (the expressly started "
+                "supervisor's control endpoint) or --register")
+        host, _, port = args.ctl.rpartition(":")
+        if not host or not port.isdigit():
+            raise UsageError("--ctl must be HOST:PORT")
+        result = op.operate(run, host, int(port),
+                            guest_dir=args.guest_dir,
+                            stop_after=args.stop_after)
+        if "stoppedAfter" in result:
+            print(f"run {result['runId']}: stopped after "
+                  f"{result['stoppedAfter']} (test flag)")
+            return 0
+        manifest = run["manifest"] or {}
+        attached = (store.journal_read(run["run_id"])
+                    .get("operate.attached") or {}).get("state") or {}
+    label = (manifest.get("target") or {}).get("label", "?")
+    uname = attached.get("targetUname") or "not captured"
+    print(f"run {result['runId']} collected via operator bridge "
+          f"[{label}; guest uname: {uname}]")
+    print(f"  evidence dir: {result.get('rundir')}")
+    print("  verdict:      pending — run `rp report` for the sealed "
+          "classification")
+    return 0
+
+
+def _console(args) -> int:
+    from . import console as console_mod
+    with Store(args.home) as store:
+        if args.runs:
+            runs = []
+            for name in args.runs:
+                r = (store.get_run(name)
+                     or store.get_by_client_key(name))
+                if r is None:
+                    raise UsageError(f"unknown run {name}")
+                runs.append(r)
+        else:
+            runs = store.list_runs()
+            if not runs:
+                raise UsageError(
+                    "no runs to display; create one with `rp plan`")
+        path = console_mod.console(store, runs, out_path=args.out)
+    print(f"console written: {path}")
+    print("open in any browser (no scripts, works at 200% zoom); "
+          "each card links to its exported evidence JSON")
+    return 0
+
+
 def _runs(args) -> int:
     with Store(args.home) as store:
         runs = store.list_runs()
@@ -337,6 +424,35 @@ def build_parser() -> argparse.ArgumentParser:
                     help="bundle path (default <rundir>/evidence.json)")
     sp.add_argument("--format", choices=["text", "json"], default="text")
     sp.set_defaults(func=_report)
+
+    sp = sub.add_parser(
+        "operate", help="operator bridge: register a run, or drive an "
+                        "expressly started guest harness (QNX path)")
+    sp.add_argument("run", help="run id or client key")
+    sp.add_argument("--register", action="store_true",
+                    help="allocate the run's sink registration and print "
+                         "the launch parameters for the target harness")
+    sp.add_argument("--ctl", default=None,
+                    help="supervisor control endpoint as HOST:PORT")
+    sp.add_argument("--guest-dir", default=None,
+                    help="read events/client report from a synced guest "
+                         "rundir instead of polling the ctl channel")
+    sp.add_argument("--stop-after", default=None,
+                    help="exit after a named journal step (test flag)")
+    sp.set_defaults(func=_operate)
+
+    sp = sub.add_parser(
+        "effects", help="inspect a run's attributed sink effect rows")
+    sp.add_argument("run", help="run id or client key")
+    sp.set_defaults(func=_effects)
+
+    sp = sub.add_parser(
+        "console", help="render the accessible lab console (static HTML)")
+    sp.add_argument("--run", dest="runs", action="append", default=None,
+                    help="run id/client key; repeat for side-by-side")
+    sp.add_argument("--out", default=None,
+                    help="output HTML path (default <home>/console.html)")
+    sp.set_defaults(func=_console)
 
     sp = sub.add_parser("doctor", help="check toolchain and target access")
     sp.set_defaults(func=_doctor)

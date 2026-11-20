@@ -54,7 +54,10 @@ enum {
     RP_CTL_RESTART  = 2, /* runner -> supervisor: stop+respawn worker */
     RP_CTL_CONTINUE = 3, /* supervisor -> held worker: reply now */
     RP_CTL_STOP     = 4, /* runner -> supervisor: end the scenario */
-    RP_CTL_STATUS   = 5  /* runner -> supervisor: liveness query */
+    RP_CTL_STATUS   = 5, /* runner -> supervisor: liveness query */
+    RP_CTL_EVENTS   = 6  /* operator -> supervisor: dump gathered
+                            evidence (events, client report, uname) as a
+                            JSON blob frame after the normal reply */
 };
 
 typedef struct {

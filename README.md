@@ -26,7 +26,7 @@ evidence.
 | IPC harness | Implemented + host-tested; real QNX guest run **unverified** (M03) |
 | Runner / retry | Implemented (M04) |
 | Verdict / evidence | Implemented (M05) |
-| Lab console | Pending (M06) |
+| Lab console + operator bridge | Implemented; real QNX target run **unverified** (M06) |
 
 **A Linux/macOS host run is not QNX proof.** Host execution is labeled
 `HOST_FIXTURE` and cannot satisfy the QNX release gate.
@@ -50,6 +50,10 @@ python3 -m rp run --scenario label-retry \
     --profile host-fixture --sink keyed --client-key demo-1   # full run
 python3 -m rp collect run-…               # reattach / finish collection
 python3 -m rp report run-…                # sealed verdict + evidence bundle
+python3 -m rp effects run-…               # attributed sink effect rows
+python3 -m rp console                     # accessible lab console (HTML)
+python3 -m rp operate run-… --register    # allocate sink registration
+python3 -m rp operate run-… --ctl H:P     # drive an attached guest harness
 python3 -m rp sink start                  # receipt sink service (per home)
 python3 -m rp sink status                 # health + adapter version
 python3 -m rp sink stop

@@ -114,6 +114,10 @@ int rp_ctl_reply(int fd, const rp_msg_ctl_reply_t *resp) {
     return ctl_frame_write(fd, resp, sizeof *resp);
 }
 
+int rp_ctl_send_blob(int fd, const void *buf, uint32_t len) {
+    return ctl_frame_write(fd, buf, len);
+}
+
 int rp_ctl_connect(const char *host, int port, int *out_fd) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
