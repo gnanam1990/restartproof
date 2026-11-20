@@ -95,6 +95,10 @@ def validate_scenario(doc: dict) -> dict:
             raise UnsupportedError(
                 f"operation {op['opId']}: expectedCount must be a "
                 "non-negative integer")
+        if len(canonical_json(op["payload"])) > 512:
+            raise UnsupportedError(
+                f"operation {op['opId']}: payload exceeds the 512-byte "
+                "wire contract")
         ops.append({
             "opId": op["opId"],
             "effect": op.get("effect", doc["effectBoundary"]),
@@ -156,7 +160,8 @@ def pin_manifest(*, run_id: str, client_key: str, scenario: dict,
         "effectBoundary": scenario["effectBoundary"],
         "operations": [
             {"opId": o["opId"], "payloadDigest": o["payloadDigest"],
-             "expectedCount": o["expectedCount"]}
+             "expectedCount": o["expectedCount"],
+             "payload": o["payload"]}
             for o in scenario["operations"]
         ],
         "retry": scenario["retry"],
