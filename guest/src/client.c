@@ -24,7 +24,9 @@ static const char *send_result_name(int r) {
         case RP_SEND_LOST_REPLY:     return "LOST_REPLY";
         case RP_SEND_TIMEDOUT:       return "ETIMEDOUT";
         case RP_SEND_CONNECT_FAILED: return "CONNECT_FAILED";
-        default:                     return "NO_ENDPOINT";
+        case RP_SEND_NO_ENDPOINT:    return "NO_ENDPOINT";
+        case RP_SEND_INTERNAL:       return "TRANSPORT_ERR";
+        default:                     return "UNKNOWN";
     }
 }
 

@@ -66,8 +66,11 @@ int rp_listen(const char *endpoint, rp_listener_t **out) {
 
 int rp_listen_recv(rp_listener_t *l, rp_msg_deliver_t *out, rp_conn_t **cli,
                    int timeout_ms) {
+    /* returns 0 with *cli set, 1 on timeout, <0 on error — a timeout
+     * must never look like a successful accept with a NULL cli */
     int r = wait_io(l->fd, POLLIN, timeout_ms);
-    if (r <= 0) return r;
+    if (r == 0) return 1;
+    if (r < 0) return r;
     int fd = accept(l->fd, NULL, NULL);
     if (fd < 0) return -1;
     int rr = read_full(fd, out, sizeof *out);

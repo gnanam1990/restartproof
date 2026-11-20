@@ -149,8 +149,13 @@ int main(int argc, char **argv) {
                 "{\"kind\":\"worker_barrier_noctl\",\"gen\":%d}", gen);
             rp_msleep(barrier_ms < 5000 ? barrier_ms : 5000);
         }
-        /* if we are still alive past the barrier, answer the client */
-        rp_conn_reply(cli, &resp);
+        /* if we are still alive past the barrier, answer the client;
+         * a failed reply is journaled — it is part of the evidence,
+         * not an inference */
+        if (rp_conn_reply(cli, &resp) < 0)
+            rp_event(rundir,
+                "{\"kind\":\"worker_reply_failed\",\"gen\":%d,"
+                "\"attemptId\":\"%s\"}", gen, req.attempt_id);
         rp_conn_close(cli);
     }
 }

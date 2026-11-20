@@ -50,6 +50,33 @@ def build_guest():
 
 
 @unittest.skipUnless(_have_cc(), "no host C compiler")
+class TestTransportContract(RpTestCase):
+    """Host-side contract test for the portable transport: the same
+    return-code conventions transport_qnx.c implements (0 ok / 1 timeout
+    / <0 error, timeout never yields a NULL conn)."""
+
+    def test_transport_contract(self):
+        cc = next(x for x in ("cc", "gcc", "clang") if shutil.which(x))
+        exe = os.path.join(self.tmp.name, "rp_contract")
+        src = os.path.join(REPO_ROOT, "tests",
+                           "guest_transport_contract.c")
+        srcdir = os.path.join(REPO_ROOT, "guest", "src")
+        proc = subprocess.run([
+            cc, "-I", os.path.join(REPO_ROOT, "guest", "include"),
+            "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE",
+            "-O0", "-Wall", "-Wextra", "-std=c11",
+            "-o", exe, src,
+            os.path.join(srcdir, "transport_posix.c"),
+            os.path.join(srcdir, "transport_ctl.c")],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        run = subprocess.run([exe, self.tmp.name],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0,
+                         run.stdout + run.stderr)
+
+
+@unittest.skipUnless(_have_cc(), "no host C compiler")
 class HarnessCase(RpTestCase):
     @classmethod
     def setUpClass(cls):

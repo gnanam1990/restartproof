@@ -92,7 +92,8 @@ enum {
     RP_SEND_LOST_REPLY     = 1, /* peer vanished mid-request (ESRCH class) */
     RP_SEND_TIMEDOUT       = 2,
     RP_SEND_CONNECT_FAILED = 3,
-    RP_SEND_NO_ENDPOINT    = 4
+    RP_SEND_NO_ENDPOINT    = 4,
+    RP_SEND_INTERNAL       = 5  /* transport setup failure, not a send */
 };
 
 #endif /* RP_PROTOCOL_H */

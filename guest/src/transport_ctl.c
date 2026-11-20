@@ -83,8 +83,9 @@ int rp_ctl_listen(int port, int *out_fd) {
 }
 
 int rp_ctl_accept(int listen_fd, int *out_fd, int timeout_ms) {
+    /* 0 accepted, 1 timeout, <0 error */
     int r = wait_io(listen_fd, POLLIN, timeout_ms);
-    if (r <= 0) return r;
+    if (r <= 0) return r == 0 ? 1 : r;
     int fd = accept(listen_fd, NULL, NULL);
     if (fd < 0) return -1;
     *out_fd = fd;

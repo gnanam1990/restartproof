@@ -36,6 +36,9 @@ struct rp_conn {
 int rp_listen(const char *endpoint, rp_listener_t **out) {
     rp_listener_t *l = calloc(1, sizeof *l);
     if (!l) return -1;
+    /* flags 0: register in the LOCAL namespace — the endpoint must not
+     * leak into a global Qnet namespace where foreign senders could
+     * reach the measured boundary */
     l->attach = name_attach(NULL, endpoint, 0);
     if (!l->attach) { free(l); return -1; }
     l->chid = l->attach->chid;
@@ -46,20 +49,30 @@ int rp_listen(const char *endpoint, rp_listener_t **out) {
 
 int rp_listen_recv(rp_listener_t *l, rp_msg_deliver_t *out, rp_conn_t **cli,
                    int timeout_ms) {
+    /* returns 0 with *cli set, 1 on timeout, <0 on error */
     struct _msg_info info;
     if (timeout_ms >= 0) {
-        struct timespec to = { timeout_ms / 1000,
-                               (long)(timeout_ms % 1000) * 1000000L };
-        TimerTimeout(CLOCK_MONOTONIC, _NTO_TIMEOUT_RECEIVE, NULL, &to, NULL);
+        /* TimerTimeout ntime is a uint64_t of RELATIVE NANOSECONDS */
+        uint64_t ns = (uint64_t)timeout_ms * 1000000ULL;
+        if (TimerTimeout(CLOCK_MONOTONIC, _NTO_TIMEOUT_RECEIVE, NULL,
+                         &ns, NULL) == -1)
+            return -5;                   /* could not arm the bound */
     }
     int rcvid = MsgReceive(l->chid, out, sizeof *out, &info);
     if (rcvid < 0) {
-        if (errno == ETIMEDOUT) return 0;
+        if (errno == ETIMEDOUT) return 1;
         return -1;
     }
     if (rcvid == 0) return -2;           /* pulse — not a request */
+    if (info.msglen != sizeof *out) {
+        /* short/oversized payload: unblock the sender with an error so
+         * it records LOST_REPLY; never let a partial struct reach the
+         * measured boundary */
+        MsgError(rcvid, EINVAL);
+        return -3;
+    }
     rp_conn_t *c = calloc(1, sizeof *c);
-    if (!c) return -1;
+    if (!c) { MsgError(rcvid, ENOMEM); return -1; }
     c->rcvid = rcvid;
     *cli = c;
     return 0;
@@ -75,7 +88,11 @@ void rp_conn_close(rp_conn_t *c) {
 
 void rp_unlisten(rp_listener_t *l) {
     if (!l) return;
-    name_detach(l->attach, l->chid);
+    /* name_detach(dpp, chid): detaches the registered name and destroys
+     * the channel; any blocked senders unblock with an error */
+    if (name_detach(l->attach, l->chid) == -1) {
+        /* process teardown cleans up regardless; nothing to report to */
+    }
     free(l);
 }
 
@@ -92,17 +109,17 @@ int rp_connect(const char *endpoint, rp_conn_t **out) {
 int rp_request(rp_conn_t *c, const rp_msg_deliver_t *req,
                rp_msg_reply_t *resp, int timeout_ms) {
     if (timeout_ms >= 0) {
-        struct timespec to = { timeout_ms / 1000,
-                               (long)(timeout_ms % 1000) * 1000000L };
-        TimerTimeout(CLOCK_MONOTONIC,
-                     _NTO_TIMEOUT_SEND | _NTO_TIMEOUT_REPLY,
-                     NULL, &to, NULL);
+        /* uint64_t relative nanoseconds — covers SEND and REPLY block */
+        uint64_t ns = (uint64_t)timeout_ms * 1000000ULL;
+        if (TimerTimeout(CLOCK_MONOTONIC,
+                         _NTO_TIMEOUT_SEND | _NTO_TIMEOUT_REPLY,
+                         NULL, &ns, NULL) == -1)
+            return RP_SEND_INTERNAL;     /* bound could not be armed */
     }
     int rc = MsgSend(c->coid, req, sizeof *req, resp, sizeof *resp);
     if (rc < 0) {
         if (errno == ETIMEDOUT) return RP_SEND_TIMEDOUT;
-        if (errno == ESRCH)     return RP_SEND_LOST_REPLY;
-        return RP_SEND_LOST_REPLY;
+        return RP_SEND_LOST_REPLY;   /* ESRCH/ECONNRESET: peer gone */
     }
     return RP_SEND_OK;
 }

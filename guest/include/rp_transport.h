@@ -15,7 +15,8 @@ typedef struct rp_conn rp_conn_t;
 
 /* server side */
 int  rp_listen(const char *endpoint, rp_listener_t **out);
-/* accept + read one request; returns 0 with *cli set to a reply token */
+/* accept + read one request; returns 0 with *cli set to a reply token,
+ * 1 on timeout, <0 on error. A timeout never yields a NULL cli. */
 int  rp_listen_recv(rp_listener_t *l, rp_msg_deliver_t *out, rp_conn_t **cli,
                     int timeout_ms);
 int  rp_conn_reply(rp_conn_t *c, const rp_msg_reply_t *msg);
