@@ -39,7 +39,7 @@ GUEST_BIN = os.path.join(REPO_ROOT, "guest", "bin")
 STEPS = ("sink.registered", "supervisor.started", "client.started",
          "barrier.observed", "restart.sent", "client.done",
          "supervisor.stopped", "evidence.imported", "epoch.closed",
-         "seal.stored")
+         "seal.stored", "sink.snapshot")
 
 # Bounded waits (NFR-01). None of these may block forever; the env
 # overrides exist so the test suite can shrink the same bounds, not so
@@ -430,6 +430,36 @@ class Runner:
                 token=sink["readerToken"])
             self._mark(rid, "seal.stored",
                        {"http": st, **body})
+            j = self.store.journal_read(rid)
+
+        # durable effect snapshot: the reducer can work offline and a
+        # second read of the same row is deduped, not double-counted
+        if not done("sink.snapshot"):
+            try:
+                rows, more, from_seq = [], True, 0
+                st = 0
+                while more:
+                    st, body = http_json(
+                        f"http://127.0.0.1:{sink['sinkPort']}"
+                        f"/v1/runs/{rid}/effects"
+                        f"?from_seq={from_seq}&limit=500",
+                        token=sink["readerToken"])
+                    if st != 200:
+                        break
+                    rows.extend(body.get("effects", []))
+                    more = body.get("hasMore", False)
+                    from_seq = body.get("nextFromSeq", from_seq + 500)
+                if st == 200:
+                    self.store.record_fact(
+                        rid, "sink.effects",
+                        {"runNonce": nonce, "sinkId": sink["sinkId"],
+                         "effects": rows})
+                self._mark(rid, "sink.snapshot",
+                           {"reachable": True, "http": st,
+                            "rowCount": len(rows)})
+            except OSError as exc:
+                self._mark(rid, "sink.snapshot",
+                           {"reachable": False, "error": str(exc)})
 
         self.store.set_status(rid, "collected")
         return {"runId": rid, "collected": True,

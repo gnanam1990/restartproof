@@ -25,7 +25,7 @@ evidence.
 | Receipt sink | Implemented (M02) |
 | IPC harness | Implemented + host-tested; real QNX guest run **unverified** (M03) |
 | Runner / retry | Implemented (M04) |
-| Verdict / evidence | Pending (M05) |
+| Verdict / evidence | Implemented (M05) |
 | Lab console | Pending (M06) |
 
 **A Linux/macOS host run is not QNX proof.** Host execution is labeled
@@ -49,6 +49,7 @@ python3 -m rp manifest run-…
 python3 -m rp run --scenario label-retry \
     --profile host-fixture --sink keyed --client-key demo-1   # full run
 python3 -m rp collect run-…               # reattach / finish collection
+python3 -m rp report run-…                # sealed verdict + evidence bundle
 python3 -m rp sink start                  # receipt sink service (per home)
 python3 -m rp sink status                 # health + adapter version
 python3 -m rp sink stop
