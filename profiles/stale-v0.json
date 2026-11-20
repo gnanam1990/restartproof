@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 0,
+  "profileId": "stale-v0",
+  "description": "Deliberately stale fixture: schemaVersion 0 predates the manifest contract and must be rejected as a diagnostic outcome (T-002).",
+  "target": {
+    "os": "legacy",
+    "label": "LEGACY"
+  }
+}

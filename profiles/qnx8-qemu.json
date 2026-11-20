@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "profileId": "qnx8-qemu",
+  "description": "QNX 8.0 guest under QEMU (x86_64 or aarch64). Requires a licensed QNX SDP toolchain to build the guest harness and a reachable guest agent to drive it. Absent either, launch reports setup/unsupported (exit 3).",
+  "target": {
+    "os": "QNX",
+    "label": "QNX 8.0 QEMU guest",
+    "version": "8.0",
+    "arch": "x86_64",
+    "qnx": true
+  },
+  "capabilities": {
+    "nativeQnxIpc": true
+  },
+  "requires": {
+    "qnxSdp": true,
+    "guestDelegate": true
+  }
+}

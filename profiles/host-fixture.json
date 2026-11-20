@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "profileId": "host-fixture",
+  "description": "Portable host fixture: the same restart/retry logic running under POSIX process control on a dev host. Evidence is labeled HOST_FIXTURE and cannot satisfy the QNX release gate.",
+  "target": {
+    "os": "posix",
+    "label": "HOST_FIXTURE",
+    "qnx": false
+  },
+  "capabilities": {
+    "nativeQnxIpc": false
+  },
+  "requires": {}
+}
