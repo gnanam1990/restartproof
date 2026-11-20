@@ -157,8 +157,10 @@ def _sink(args) -> int:
               f"(db {db})")
 
         import signal as _sig
+        import threading as _th
         def _term(*_):
-            server.shutdown()
+            # shutdown() must not run on the serve_forever thread.
+            _th.Thread(target=server.shutdown, daemon=True).start()
         _sig.signal(_sig.SIGTERM, _term)
         server.serve_forever()
         server.server_close()

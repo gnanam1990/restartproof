@@ -530,7 +530,19 @@ def sink_alive(info: dict | None) -> bool:
         return False
 
 
-def ensure_sink(home: str, timeout_s: float = 10.0) -> dict:
+def _sink_log_tail(home: str, lines: int = 15) -> str:
+    try:
+        with open(os.path.join(home, "sink.log"), "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 4096))
+            tail = fh.read().decode("utf-8", "replace")
+        return "\n".join(tail.splitlines()[-lines:])
+    except OSError:
+        return "(no sink.log)"
+
+
+def ensure_sink(home: str, timeout_s: float = 30.0) -> dict:
     """Return info for the home's sink service, starting it if needed."""
     info = read_service_info(home)
     if sink_alive(info):
@@ -538,12 +550,16 @@ def ensure_sink(home: str, timeout_s: float = 10.0) -> dict:
     import subprocess
     import sys
     os.makedirs(home, exist_ok=True)
-    log = open(os.path.join(home, "sink.log"), "ab")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "rp", "--home", home,
-         "sink", "serve", "--port", "0"],
-        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    log_path = os.path.join(home, "sink.log")
+    log = open(log_path, "ab")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "rp", "--home", home,
+             "sink", "serve", "--port", "0"],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    finally:
+        log.close()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         info = read_service_info(home)
@@ -552,9 +568,10 @@ def ensure_sink(home: str, timeout_s: float = 10.0) -> dict:
         if proc.poll() is not None:
             raise UsageError(
                 f"sink service exited early (rc={proc.returncode}); "
-                f"see {os.path.join(home, 'sink.log')}")
+                f"log tail:\n{_sink_log_tail(home)}")
         time.sleep(0.05)
-    raise UsageError(f"sink service did not come up within {timeout_s}s")
+    raise UsageError(f"sink service did not come up within {timeout_s}s; "
+                     f"log tail:\n{_sink_log_tail(home)}")
 
 
 def stop_sink(home: str) -> bool:
