@@ -1,0 +1,24 @@
+# Private handoff material — never tracked
+.devin-handoff/
+
+# Runtime state
+.rp/
+*.db
+*.db-wal
+*.db-shm
+runs/
+evidence/out/
+
+# Build artifacts
+guest/bin/
+guest/obj/
+*.o
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store

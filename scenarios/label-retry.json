@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "label-retry",
+  "title": "Label spool retry after worker restart",
+  "effectBoundary": "spool-accept",
+  "retry": { "maxAttempts": 2 },
+  "operations": [
+    {
+      "opId": "label-job-0001",
+      "effect": "spool-accept",
+      "expectedCount": 1,
+      "payload": {
+        "media": "label-2x1",
+        "text": "RP-DEMO-0001",
+        "copies": 1
+      }
+    }
+  ]
+}
