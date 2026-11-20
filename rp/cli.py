@@ -22,6 +22,7 @@ import sys
 from . import __version__
 from .buildid import build_identities
 from .errors import RpError, UnsupportedError, UsageError
+from .runner import STEPS
 from .manifest import (SINK_MODES, load_document, pin_manifest,
                        resolve_document, validate_profile, validate_scenario)
 from .store import Store
@@ -31,7 +32,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_HOME = os.environ.get("RP_HOME", os.path.join(os.getcwd(), ".rp"))
 
 
-def _plan(args) -> int:
+def _create_run(home: str, args):
+    """Validate inputs, pin the manifest, persist/retrieve the run.
+
+    Shared by `rp plan` and `rp run`. Returns (run_row, manifest, created).
+    """
     client_key = args.client_key or f"cli-{os.getpid()}-{utc_now()}"
     try:
         scenario = validate_scenario(load_document(
@@ -41,7 +46,7 @@ def _plan(args) -> int:
     except UnsupportedError as exc:
         # FR-02: record unsupported/invalid inputs as a diagnostic outcome,
         # retrievable later via `rp runs` / `rp manifest`, then fail.
-        with Store(args.home) as store:
+        with Store(home) as store:
             run_id = new_run_id()
             store.create_run(
                 run_id=run_id, client_key=client_key,
@@ -60,7 +65,7 @@ def _plan(args) -> int:
         run_id=run_id, client_key=client_key, scenario=scenario,
         profile=profile, sink_mode=args.sink, nonce=args.nonce,
         builds=builds, created_utc=utc_now())
-    with Store(args.home) as store:
+    with Store(home) as store:
         run, created = store.create_run(
             run_id=run_id, client_key=client_key, manifest=manifest,
             status="planned")
@@ -70,6 +75,11 @@ def _plan(args) -> int:
             "clientKey": client_key,
             "reusedClientKey": not created,
         })
+    return run, manifest, created
+
+
+def _plan(args) -> int:
+    run, manifest, created = _create_run(args.home, args)
     verb = "planned" if created else "retrieved (client key reuse)"
     print(f"run {verb}: {run['run_id']}")
     print(f"  scenario:    {manifest['scenarioId']} "
@@ -84,6 +94,48 @@ def _plan(args) -> int:
               f"payload={op['payloadDigest'][:16]}…")
     print(f"  manifest:    {manifest['manifestDigest'][:16]}…  "
           f"(persisted at {os.path.join(args.home, 'state.db')})")
+    return 0
+
+
+def _run(args) -> int:
+    from .runner import Runner
+    run, manifest, _ = _create_run(args.home, args)
+    with Store(args.home) as store:
+        run = store.get_run(run["run_id"])
+        result = Runner(args.home, store).execute(
+            run, hold_first=not args.no_hold,
+            stop_after=args.stop_after)
+    if "stoppedAfter" in result:
+        print(f"run {result['runId']}: stopped after "
+              f"{result['stoppedAfter']} (test flag); finish with "
+              f"`rp collect --run {result['runId']}`")
+        return 0
+    return _print_run_result(result, manifest)
+
+
+def _collect(args) -> int:
+    from .runner import Runner
+    with Store(args.home) as store:
+        run = store.get_run(args.run) or store.get_by_client_key(args.run)
+        if run is None:
+            raise UsageError(f"unknown run {args.run}")
+        result = Runner(args.home, store).collect(
+            run, stop_after=args.stop_after)
+        manifest = run["manifest"] or {}
+    if "stoppedAfter" in result:
+        print(f"run {result['runId']}: stopped after "
+              f"{result['stoppedAfter']} (test flag)")
+        return 0
+    return _print_run_result(result, manifest)
+
+
+def _print_run_result(result: dict, manifest: dict) -> int:
+    rid = result["runId"]
+    label = (manifest.get("target") or {}).get("label", "?")
+    print(f"run {rid} collected [{label}]")
+    print(f"  evidence dir: {result.get('rundir')}")
+    print("  verdict:      pending — run `rp report` (M05) for the "
+          "sealed classification")
     return 0
 
 
@@ -224,6 +276,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("manifest", help="print a run's pinned manifest")
     sp.add_argument("run", help="run id or client key")
     sp.set_defaults(func=_manifest)
+
+    sp = sub.add_parser(
+        "run", help="plan, launch and collect a bounded run (host fixture)")
+    sp.add_argument("--scenario", required=True)
+    sp.add_argument("--profile", required=True)
+    sp.add_argument("--sink", choices=SINK_MODES, default="keyed")
+    sp.add_argument("--client-key", default=None,
+                    help="idempotent launch key; reuse retrieves the run")
+    sp.add_argument("--nonce", default=None,
+                    help="pin a specific run nonce (testing only)")
+    sp.add_argument("--no-hold", action="store_true",
+                    help="first attempt does NOT hold at the post-commit "
+                         "barrier (failure-path measurement)")
+    sp.add_argument("--stop-after", default=None,
+                    choices=STEPS,
+                    help="exit after a named journal step (simulates a "
+                         "collector restart; finish with `rp collect`)")
+    sp.set_defaults(func=_run)
+
+    sp = sub.add_parser(
+        "collect", help="reattach to a run and finish collection "
+                        "(no new operations are ever sent)")
+    sp.add_argument("run", help="run id or client key")
+    sp.add_argument("--stop-after", default=None,
+                    choices=STEPS,
+                    help="exit after a named journal step (test flag)")
+    sp.set_defaults(func=_collect)
 
     sp = sub.add_parser("doctor", help="check toolchain and target access")
     sp.set_defaults(func=_doctor)

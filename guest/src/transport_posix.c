@@ -107,6 +107,7 @@ int rp_connect(const char *endpoint, rp_conn_t **out) {
     struct sockaddr_un a;
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
+    if (strlen(endpoint) >= sizeof a.sun_path) { close(fd); return -1; }
     strcpy(a.sun_path, endpoint);
     if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
         close(fd);
