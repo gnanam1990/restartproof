@@ -17,6 +17,7 @@ CTL_RESTART = 2
 CTL_CONTINUE = 3
 CTL_STOP = 4
 CTL_STATUS = 5
+CTL_EVENTS = 6
 
 CTL_OK = 0
 CTL_ERR_NONCE = -1
@@ -61,6 +62,31 @@ def ctl_request(host: str, port: int, msg: bytes,
         if length > 4096:
             raise ValueError(f"implausible ctl frame length {length}")
         return unpack_ctl_reply(_recv_exact(sock, length))
+
+
+def ctl_request_events(host: str, port: int, nonce: str,
+                       timeout: float = 10.0) -> dict:
+    """RP_CTL_EVENTS: normal reply frame, then a JSON evidence blob.
+
+    Read-only gather for the operator bridge — returns
+    {"reply": <ctl reply>, "evidence": {uname, events, clientReport}}.
+    """
+    import json as _json
+    msg = pack_ctl(kind=CTL_EVENTS, nonce=nonce)
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(struct.pack("<I", len(msg)) + msg)
+        hdr = _recv_exact(sock, 4)
+        length = struct.unpack("<I", hdr)[0]
+        if length > 4096:
+            raise ValueError(f"implausible ctl frame length {length}")
+        reply = unpack_ctl_reply(_recv_exact(sock, length))
+        hdr = _recv_exact(sock, 4)
+        blen = struct.unpack("<I", hdr)[0]
+        if blen > 1024 * 1024:
+            raise ValueError(f"implausible evidence blob length {blen}")
+        evidence = _json.loads(_recv_exact(sock, blen).decode("utf-8"))
+        return {"reply": reply, "evidence": evidence}
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:

@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
 
 extern char **environ;
 
@@ -110,6 +111,96 @@ static int stop_worker(sup_t *s, int gen) {
     return 0;
 }
 
+/* read a whole file (bounded); NULL if absent */
+static char *read_whole(const char *path, size_t cap) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char *b = malloc(cap + 1);
+    if (!b) { fclose(f); return NULL; }
+    size_t n = fread(b, 1, cap, f);
+    fclose(f);
+    b[n] = 0;
+    return b;
+}
+
+#define RP_EV_CAP (192 * 1024)
+
+/* minimal JSON string escaping (quotes + backslashes + controls) */
+static void json_escape(const char *in, char *out, size_t cap) {
+    size_t o = 0;
+    for (const char *p = in; *p && o + 2 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') {
+            out[o++] = '\\'; out[o++] = (char)c;
+        } else if (c < 0x20) {
+            out[o++] = ' ';
+        } else {
+            out[o++] = (char)c;
+        }
+    }
+    out[o] = 0;
+}
+
+/* build {"uname":"…","events":[…],"clientReport":<obj|null>} for the
+ * operator bridge (RP_CTL_EVENTS). events.jsonl lines are already JSON
+ * objects; the client report embeds verbatim when present. */
+static char *gather_evidence(sup_t *s) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/events.jsonl", s->rundir);
+    char *raw = read_whole(path, RP_EV_CAP);
+    size_t ev_len = raw ? strlen(raw) : 0;
+    char *events = malloc(ev_len + 4);
+    if (events) {
+        char *o = events;
+        *o++ = '[';
+        int first = 1;
+        if (raw) {
+            char *line = raw, *end;
+            while (*line) {
+                end = strchr(line, '\n');
+                size_t n = end ? (size_t)(end - line) : strlen(line);
+                while (n && (line[n-1] == '\r' || line[n-1] == ' ')) n--;
+                if (n && line[0] == '{') {
+                    if (!first) *o++ = ',';
+                    memcpy(o, line, n); o += n;
+                    first = 0;
+                }
+                line = end ? end + 1 : line + n;
+            }
+        }
+        *o++ = ']'; *o = 0;
+    }
+
+    snprintf(path, sizeof path, "%s/client_report.json", s->rundir);
+    char *rep = read_whole(path, 96 * 1024);
+    if (rep) {
+        size_t n = strlen(rep);
+        while (n && (rep[n-1] == '\n' || rep[n-1] == ' '
+                     || rep[n-1] == '\r')) rep[--n] = 0;
+        if (rep[0] != '{') { free(rep); rep = NULL; }
+    }
+
+    char uname_esc[640] = "unknown";
+    struct utsname u;
+    if (uname(&u) == 0) {
+        char ubuf[512];
+        snprintf(ubuf, sizeof ubuf, "%s %s %s %s",
+                 u.sysname, u.release, u.version, u.machine);
+        json_escape(ubuf, uname_esc, sizeof uname_esc);
+    }
+
+    size_t total = (events ? strlen(events) : 2)
+                 + (rep ? strlen(rep) : 4) + strlen(uname_esc) + 96;
+    char *json = malloc(total);
+    if (json) {
+        snprintf(json, total,
+            "{\"uname\":\"%s\",\"events\":%s,\"clientReport\":%s}",
+            uname_esc, events ? events : "[]", rep ? rep : "null");
+    }
+    free(raw); free(events); free(rep);
+    return json;
+}
+
 static void handle_ctl(sup_t *s, int fd, const rp_msg_ctl_t *m) {
     if (m->protocol_version != RP_PROTOCOL_VERSION) {
         reply(fd, RP_CTL_ERR_BAD_MSG, s->generation, "bad version");
@@ -153,6 +244,17 @@ static void handle_ctl(sup_t *s, int fd, const rp_msg_ctl_t *m) {
         char d[64];
         snprintf(d, sizeof d, "generation %d", s->generation);
         reply(fd, RP_CTL_OK, s->generation, d);
+        return;
+    }
+    if (m->kind == RP_CTL_EVENTS) {
+        /* read-only gather for the operator bridge; nonce already
+         * verified, no control-generation draw (like STATUS) */
+        char *json = gather_evidence(s);
+        reply(fd, json ? RP_CTL_OK : RP_CTL_ERR_INTERNAL,
+              s->generation, "evidence");
+        rp_ctl_send_blob(fd, json ? json : "{}",
+                         (uint32_t)(json ? strlen(json) : 2));
+        free(json);
         return;
     }
     if (m->control_generation <= s->last_control_gen) {

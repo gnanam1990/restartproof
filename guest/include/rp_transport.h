@@ -40,5 +40,8 @@ int  rp_ctl_recv_reply(int fd, rp_msg_ctl_reply_t *out, int timeout_ms);
 int  rp_ctl_send(int fd, const rp_msg_ctl_t *req);
 int  rp_ctl_reply(int fd, const rp_msg_ctl_reply_t *resp);
 int  rp_ctl_connect(const char *host, int port, int *out_fd);
+/* variable-length payload frame ([u32 len][bytes]); used by the
+ * supervisor to stream gathered evidence to the operator bridge */
+int  rp_ctl_send_blob(int fd, const void *buf, uint32_t len);
 
 #endif /* RP_TRANSPORT_H */

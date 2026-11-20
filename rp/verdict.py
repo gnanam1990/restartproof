@@ -78,12 +78,14 @@ def reduce_verdict(run: dict, journal: dict, facts: list[dict],
     rid = run["run_id"]
     ops = m.get("operations") or []
 
-    if run.get("status") in ("unsupported", "diagnostic") \
+    if run.get("status") in ("unsupported", "diagnostic", "planned") \
             or not m.get("runNonce"):
+        reason = run.get("diagnostic") or (
+            "run never executed — nothing measured"
+            if run.get("status") == "planned"
+            else "run has no pinned manifest")
         return {
-            "verdict": {"code": VERDICT_SETUP,
-                        "reason": run.get("diagnostic")
-                                  or "run has no pinned manifest",
+            "verdict": {"code": VERDICT_SETUP, "reason": reason,
                         "incomplete": False,
                         "exitCode": _EXIT[VERDICT_SETUP]},
             "analysis": {}}
@@ -259,6 +261,8 @@ _JOURNAL_ALLOW = {
     "epoch.closed": {"http", "closed", "epoch"},
     "seal.stored": {"http", "seal"},
     "sink.snapshot": {"reachable", "http", "rowCount", "error"},
+    "operate.attached": {"attached", "generation", "ctlPort", "via",
+                         "targetUname", "reason", "status"},
 }
 
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "credential")
@@ -325,6 +329,8 @@ def build_bundle(store, run) -> dict:
     qnx = bool(target.get("qnx"))
     report_fact = next((f["payload"] for f in facts
                         if f["kind"] == "client.report"), None)
+    attached = ((journal.get("operate.attached") or {})
+                .get("state") or {})
 
     bundle = {
         "bundleVersion": BUNDLE_VERSION,
@@ -333,6 +339,16 @@ def build_bundle(store, run) -> dict:
         "runId": rid,
         "manifestDigest": m.get("manifestDigest"),
         "runNonce": m.get("runNonce"),
+        "scenarioId": m.get("scenarioId"),
+        "targetIdentity": {
+            # identity claimed by the guest control plane (uname), not
+            # verified host-side — recorded honestly either way
+            "uname": attached.get("targetUname"),
+            "execution": ("operator-bridge" if attached.get("attached")
+                          else "host-runner"
+                          if "supervisor.started" in journal
+                          else "not-run"),
+        },
         "target": target,
         "provenance": target.get("label") or (
             "qnx" if qnx else "HOST_FIXTURE"),

@@ -11,6 +11,7 @@ evidence/out/
 
 # Build artifacts
 guest/bin/
+guest/bin-qnx/
 guest/obj/
 *.o
 

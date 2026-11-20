@@ -413,54 +413,81 @@ class Runner:
                    {"through": through, "reportImported": report is not None})
         j = self.store.journal_read(rid)
 
-        # -- writer boundary stops before the seal request (FR-08) ------
-        sink = j["sink.registered"]["state"]
-        if not done("epoch.closed"):
+        finish_collection(self.store, run, self._mark)
+        return {"runId": rid, "collected": True,
+                "rundir": rd, "collectedUtc": utc_now()}
+
+
+def finish_collection(store, run, mark) -> None:
+    """Writer boundary closed, sealed, snapshotted (FR-08).
+
+    Shared tail of local (runner) and operator-bridge collection; all
+    steps are journal-guarded so re-entry never repeats them.
+    """
+    rid = run["run_id"]
+    nonce = run["manifest"]["runNonce"]
+    j = store.journal_read(rid)
+
+    # a step marked unreachable is recorded (for evidence) but retried on
+    # the next collection pass — transient sink loss must not freeze a
+    # withheld seal into the run forever
+    def done(step: str) -> bool:
+        state = (j.get(step) or {}).get("state") or {}
+        return step in j and state.get("reachable", True) is not False
+
+    sink = j["sink.registered"]["state"]
+
+    if not done("epoch.closed"):
+        try:
             st, body = http_json(
                 f"http://127.0.0.1:{sink['sinkPort']}"
                 f"/v1/runs/{rid}/close", {},
                 token=sink["readerToken"])
-            self._mark(rid, "epoch.closed",
-                       {"http": st, **body})
-            j = self.store.journal_read(rid)
-        if not done("seal.stored"):
+            mark(rid, "epoch.closed", {"http": st, **body})
+        except OSError as exc:
+            # a withheld boundary is evidence too — record the failure,
+            # never a guessed seal (T-013)
+            mark(rid, "epoch.closed",
+                 {"http": 0, "reachable": False, "error": str(exc)})
+        j = store.journal_read(rid)
+    if not done("seal.stored"):
+        try:
             st, body = http_json(
                 f"http://127.0.0.1:{sink['sinkPort']}"
                 f"/v1/runs/{rid}/seal", {},
                 token=sink["readerToken"])
-            self._mark(rid, "seal.stored",
-                       {"http": st, **body})
-            j = self.store.journal_read(rid)
+            mark(rid, "seal.stored", {"http": st, **body})
+        except OSError as exc:
+            mark(rid, "seal.stored",
+                 {"http": 0, "reachable": False, "error": str(exc)})
+        j = store.journal_read(rid)
 
-        # durable effect snapshot: the reducer can work offline and a
-        # second read of the same row is deduped, not double-counted
-        if not done("sink.snapshot"):
-            try:
-                rows, more, from_seq = [], True, 0
-                st = 0
-                while more:
-                    st, body = http_json(
-                        f"http://127.0.0.1:{sink['sinkPort']}"
-                        f"/v1/runs/{rid}/effects"
-                        f"?from_seq={from_seq}&limit=500",
-                        token=sink["readerToken"])
-                    if st != 200:
-                        break
-                    rows.extend(body.get("effects", []))
-                    more = body.get("hasMore", False)
-                    from_seq = body.get("nextFromSeq", from_seq + 500)
-                if st == 200:
-                    self.store.record_fact(
-                        rid, "sink.effects",
-                        {"runNonce": nonce, "sinkId": sink["sinkId"],
-                         "effects": rows})
-                self._mark(rid, "sink.snapshot",
-                           {"reachable": True, "http": st,
-                            "rowCount": len(rows)})
-            except OSError as exc:
-                self._mark(rid, "sink.snapshot",
-                           {"reachable": False, "error": str(exc)})
+    # durable effect snapshot: the reducer can work offline and a
+    # second read of the same row is deduped, not double-counted
+    if not done("sink.snapshot"):
+        try:
+            rows, more, from_seq = [], True, 0
+            st = 0
+            while more:
+                st, body = http_json(
+                    f"http://127.0.0.1:{sink['sinkPort']}"
+                    f"/v1/runs/{rid}/effects"
+                    f"?from_seq={from_seq}&limit=500",
+                    token=sink["readerToken"])
+                if st != 200:
+                    break
+                rows.extend(body.get("effects", []))
+                more = body.get("hasMore", False)
+                from_seq = body.get("nextFromSeq", from_seq + 500)
+            if st == 200:
+                store.record_fact(
+                    rid, "sink.effects",
+                    {"runNonce": nonce, "sinkId": sink["sinkId"],
+                     "effects": rows})
+            mark(rid, "sink.snapshot",
+                 {"reachable": True, "http": st, "rowCount": len(rows)})
+        except OSError as exc:
+            mark(rid, "sink.snapshot",
+                 {"reachable": False, "error": str(exc)})
 
-        self.store.set_status(rid, "collected")
-        return {"runId": rid, "collected": True,
-                "rundir": rd, "collectedUtc": utc_now()}
+    store.set_status(rid, "collected")
