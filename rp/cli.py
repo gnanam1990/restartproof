@@ -147,14 +147,14 @@ def _sink(args) -> int:
     if args.sink_cmd == "serve":
         db = args.db or os.path.join(args.home, "sink.db")
         service = sinkmod.SinkService(db)
-        server = service.make_server("0.0.0.0", args.port)
+        server = service.make_server(args.host, args.port)
         port = server.server_address[1]
         sinkmod.write_service_info(args.home, {
             "pid": os.getpid(), "port": port, "sinkId": service.sink_id,
             "adminToken": service.admin_token, "dbPath": db,
             "adapterVersion": sinkmod.ADAPTER_VERSION})
-        print(f"receipt sink {service.sink_id} serving on port {port} "
-              f"(db {db})")
+        print(f"receipt sink {service.sink_id} serving on "
+              f"{args.host}:{port} (db {db})", flush=True)
 
         import signal as _sig
         import threading as _th
@@ -225,6 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["serve", "start", "stop", "status"])
     sp.add_argument("--port", type=int, default=0,
                     help="serve port (0 = ephemeral, default)")
+    sp.add_argument("--host", default="127.0.0.1",
+                    help="bind address; use 0.0.0.0 only when a remote "
+                         "guest must reach the sink")
     sp.add_argument("--db", default=None,
                     help="ledger path (default <home>/sink.db)")
     sp.set_defaults(func=_sink)
