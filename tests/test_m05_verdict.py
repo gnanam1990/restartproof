@@ -254,6 +254,72 @@ class TestReportEndToEnd(RpTestCase):
         self.assertEqual(bundle["effects"]["attributableCount"], 1)
         self.assertEqual(bundle["verdict"]["code"], "PASS")
 
+    def test_report_plain_offline_fails_duplicate(self):
+        rid = self._run_fixture("m05-plain-off", sink="plain")
+        self.rp("sink", "stop", check=True)
+        proc = self.rp("report", rid)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("FAIL_DUPLICATE", proc.stdout)
+
+    def test_bundle_contains_no_credentials_or_private_paths(self):
+        rid = self._run_fixture("m05-scrub")
+        with Store(self.home) as store:
+            reg = store.journal_read(rid)["sink.registered"]["state"]
+            tokens = [reg["readerToken"], reg["writerToken"]]
+        self.assertTrue(all(tokens), "fixture must have live tokens")
+        proc = self.rp("report", rid, check=True)
+        with open(os.path.join(run_dir(self.home, rid),
+                               "evidence.json")) as fh:
+            raw = fh.read()
+        for token in tokens:
+            self.assertNotIn(token, raw,
+                             "exported bundle must not contain sink "
+                             "reader/writer tokens")
+        self.assertNotIn(os.path.abspath(self.home), raw,
+                         "private run-home path must not leak")
+        self.assertNotIn(f"/tmp/rp-{rid}", raw,
+                         "private endpoint dir must not leak")
+        self.assertIn("PASS", proc.stdout)
+
+    def test_legacy_run_without_snapshot_reviews_offline(self):
+        # a run collected before the snapshot step existed (or where the
+        # sink died before it) has no sink.effects fact and no live
+        # reader — the honest verdict is REVIEW, not a guess
+        proc = self.plan(client_key="m05-legacy")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        rid = self.run_ids()[-1]
+        with Store(self.home) as store:
+            store.set_status(rid, "collected")
+            store.journal_write(rid, "sink.registered", 1, {
+                "sinkId": "sink-x", "sinkPort": 1,
+                "writerToken": "SECRET-WRITER-TOKEN",
+                "readerToken": "SECRET-READER-TOKEN"})
+            store.journal_write(rid, "client.started", 2,
+                                {"holdFirst": True})
+            store.journal_write(rid, "barrier.observed", 3,
+                                {"observed": True})
+            store.journal_write(rid, "restart.sent", 4, {"sent": True})
+            store.journal_write(rid, "client.done", 5,
+                                {"reportPresent": True})
+            store.journal_write(rid, "supervisor.stopped", 6,
+                                {"sent": True})
+            store.journal_write(rid, "evidence.imported", 7,
+                                {"through": 0, "reportImported": True})
+            store.journal_write(rid, "epoch.closed", 8, {"closed": True})
+            store.journal_write(rid, "seal.stored", 9, {"seal": _seal()})
+            store.record_fact(rid, "client.report",
+                              {"attempts": [{"i": 0}, {"i": 1}]})
+        proc = self.rp("report", rid)
+        self.assertEqual(proc.returncode, 2,
+                         proc.stdout + proc.stderr +
+                         " — legacy run must reach REVIEW, not a guess")
+        self.assertIn("REVIEW", proc.stdout)
+        with open(os.path.join(run_dir(self.home, rid),
+                               "evidence.json")) as fh:
+            raw = fh.read()
+        self.assertNotIn("SECRET-WRITER-TOKEN", raw)
+        self.assertNotIn("SECRET-READER-TOKEN", raw)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -161,8 +161,15 @@ def _runs(args) -> int:
     with Store(args.home) as store:
         runs = store.list_runs()
     if args.format == "json":
-        print(json.dumps([{k: v for k, v in r.items() if k != "manifest"}
-                          for r in runs], indent=2))
+        home_abs = os.path.abspath(args.home)
+        rows = []
+        for r in runs:
+            row = {k: v for k, v in r.items() if k != "manifest"}
+            if isinstance(row.get("diagnostic"), str):
+                row["diagnostic"] = row["diagnostic"].replace(
+                    home_abs, "<rp-home>")
+            rows.append(row)
+        print(json.dumps(rows, indent=2))
         return 0
     if not runs:
         print("no runs recorded; create one with: rp plan --scenario "
