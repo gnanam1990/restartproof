@@ -134,9 +134,27 @@ def _print_run_result(result: dict, manifest: dict) -> int:
     label = (manifest.get("target") or {}).get("label", "?")
     print(f"run {rid} collected [{label}]")
     print(f"  evidence dir: {result.get('rundir')}")
-    print("  verdict:      pending — run `rp report` (M05) for the "
-          "sealed classification")
+    print("  verdict:      pending — run `rp report` for the sealed "
+          "classification")
     return 0
+
+
+def _report(args) -> int:
+    from . import verdict as verdict_mod
+    with Store(args.home) as store:
+        run = store.get_run(args.run) or store.get_by_client_key(args.run)
+        if run is None:
+            raise UsageError(f"unknown run {args.run}")
+        v = verdict_mod.report(store, run, out_path=args.out)
+    if args.format == "json":
+        print(json.dumps(v, indent=2, sort_keys=True))
+    else:
+        print(f"verdict {v['code']}: {v['reason']}")
+        if v.get("incomplete"):
+            print("  note:       observation marked incomplete")
+        print(f"  bundle:     {v['bundlePath']}")
+        print(f"  digest:     {v['bundleDigest'][:16]}…")
+    return v["exitCode"]
 
 
 def _runs(args) -> int:
@@ -303,6 +321,15 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=STEPS,
                     help="exit after a named journal step (test flag)")
     sp.set_defaults(func=_collect)
+
+    sp = sub.add_parser(
+        "report", help="reduce the evidence bundle and classify the run "
+                       "(exit 0 pass, 1 fail, 2 review, 3 setup)")
+    sp.add_argument("run", help="run id or client key")
+    sp.add_argument("--out", default=None,
+                    help="bundle path (default <rundir>/evidence.json)")
+    sp.add_argument("--format", choices=["text", "json"], default="text")
+    sp.set_defaults(func=_report)
 
     sp = sub.add_parser("doctor", help="check toolchain and target access")
     sp.set_defaults(func=_doctor)
