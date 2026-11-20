@@ -88,9 +88,11 @@ void rp_conn_close(rp_conn_t *c) {
 
 void rp_unlisten(rp_listener_t *l) {
     if (!l) return;
-    /* name_detach(dpp, chid): detaches the registered name and destroys
-     * the channel; any blocked senders unblock with an error */
-    if (name_detach(l->attach, l->chid) == -1) {
+    /* name_detach(attach, flags): flags 0 removes the name AND destroys
+     * the channel + dispatch handle (default semantics — we did not
+     * create the dpp ourselves, so SAVEDPP does not apply); blocked
+     * senders unblock with an error */
+    if (name_detach(l->attach, 0) == -1) {
         /* process teardown cleans up regardless; nothing to report to */
     }
     free(l);
