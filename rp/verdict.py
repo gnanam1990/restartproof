@@ -25,7 +25,7 @@ import os
 
 from . import __version__, SCHEMA_VERSION
 from .errors import UsageError
-from .runner import run_dir
+from .runner import endpoint_dir, run_dir
 from .util import digest_obj, utc_now
 
 BUNDLE_VERSION = 1
@@ -239,14 +239,87 @@ def _observations(store, run, journal) -> tuple[list[dict], bool]:
     return rows, live
 
 
+# Evidence fields allowed out of the journal into the portable bundle.
+# The raw journal is private run state: it carries sink auth tokens
+# (readerToken/writerToken), control ports, PIDs and private temp/home
+# paths — none of which belong in an exported artifact. Anything not on
+# this list is not exported.
+_JOURNAL_ALLOW = {
+    "sink.registered": {"sinkId", "sinkPort"},
+    "supervisor.started": {"pid", "ctlPort"},
+    "client.started": {"pid", "opId", "holdFirst"},
+    "barrier.observed": {"observed", "reason", "kind", "generation",
+                         "attemptId", "workerPid"},
+    "restart.sent": {"sent", "reason", "kind", "controlGeneration",
+                     "reply"},
+    "client.done": {"reportPresent", "clientAlive"},
+    "supervisor.stopped": {"sent", "reason", "kind",
+                           "controlGeneration", "reply"},
+    "evidence.imported": {"through", "reportImported"},
+    "epoch.closed": {"http", "closed", "epoch"},
+    "seal.stored": {"http", "seal"},
+    "sink.snapshot": {"reachable", "http", "rowCount", "error"},
+}
+
+_SECRET_KEY_MARKERS = ("token", "secret", "password", "credential")
+_PATH_KEY_MARKERS = ("path", "dir", "rundir", "endpointdir", "logpath")
+
+
+def _scrub(value, private_substrings=()):
+    """Defense-in-depth redaction for exported evidence.
+
+    Any dict key that names a credential or a filesystem location is
+    replaced by a marker; string values have private path substrings
+    (the run home, the endpoint dir) blanked. Keeps bundles honest but
+    free of live tokens and machine-local layout.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            lk = k.lower()
+            if any(m in lk for m in _SECRET_KEY_MARKERS) \
+                    or any(m in lk for m in _PATH_KEY_MARKERS):
+                out[k] = "<redacted>"
+            else:
+                out[k] = _scrub(v, private_substrings)
+        return out
+    if isinstance(value, list):
+        return [_scrub(v, private_substrings) for v in value]
+    if isinstance(value, str):
+        for s in private_substrings:
+            if s and s in value:
+                value = value.replace(s, "<local>")
+        return value
+    return value
+
+
+def _export_journal(journal: dict, private_substrings=()) -> dict:
+    """Allowlisted journal projection for the evidence bundle."""
+    out = {}
+    for step, entry in journal.items():
+        state = entry.get("state") or {}
+        allow = _JOURNAL_ALLOW.get(step)
+        if allow is None:
+            exported = {"present": True}
+        else:
+            exported = {k: v for k, v in state.items() if k in allow}
+        exported = _scrub(exported, private_substrings)
+        exported["controlGeneration"] = entry.get("controlGeneration")
+        out[step] = exported
+    return out
+
+
 def build_bundle(store, run) -> dict:
     """Assemble the portable evidence bundle (FR-10)."""
     rid = run["run_id"]
     m = run.get("manifest") or {}
     journal = store.journal_read(rid)
     facts = store.facts(rid)
+    private = (os.path.abspath(store.home), endpoint_dir(rid))
     observations, live = _observations(store, run, journal)
     reduced = reduce_verdict(run, journal, facts, observations)
+    reduced["verdict"]["reason"] = _scrub(
+        reduced["verdict"]["reason"], private)
     a = reduced["analysis"]
     target = m.get("target") or {}
     qnx = bool(target.get("qnx"))
@@ -268,19 +341,20 @@ def build_bundle(store, run) -> dict:
         "operations": [
             {"opId": o["opId"], "expectedCount": o["expectedCount"],
              "payloadDigest": o["payloadDigest"],
-             "attempts": (report_fact or {}).get("attempts", [])}
+             "attempts": _scrub((report_fact or {}).get("attempts", []),
+                                private)}
             for o in (m.get("operations") or [])],
         "effects": {
             "attributableCount": len(a.get("attributable", [])),
-            "attributable": a.get("attributable", []),
+            "attributable": _scrub(a.get("attributable", []), private),
             "duplicateReadsIgnored": a.get("duplicateReads", 0),
-            "conflicted": a.get("conflicted", {})},
-        "coverage": a.get("seal"),
-        "controlEvidence": {
+            "conflicted": _scrub(a.get("conflicted", {}), private)},
+        "coverage": _scrub(a.get("seal"), private),
+        "controlEvidence": _scrub({
             "barrier": (journal.get("barrier.observed") or {})
                 .get("state"),
             "restart": (journal.get("restart.sent") or {}).get("state"),
-            "stepsOk": a.get("stepsOk")},
+            "stepsOk": a.get("stepsOk")}, private),
         "thresholds": {
             "maxAttempts": (m.get("retry") or {}).get("maxAttempts"),
             "expectedCardinality": [
@@ -291,8 +365,8 @@ def build_bundle(store, run) -> dict:
         "evidenceSources": {
             "sinkSnapshotFacts": len(store.facts(rid, "sink.effects")),
             "liveSinkRead": live},
-        "journal": {k: v["state"] for k, v in journal.items()},
-        "quarantine": store.quarantined(rid),
+        "journal": _export_journal(journal, private),
+        "quarantine": _scrub(store.quarantined(rid), private),
         "verdict": reduced["verdict"],
     }
     bundle["bundleDigest"] = digest_obj(
