@@ -18,6 +18,15 @@ class RpTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.home = os.path.join(self.tmp.name, "home")
         os.makedirs(self.home)
+        # a detached `rp sink serve` child outlives its home — stop it
+        # before the tmpdir is removed or the process leaks
+        self.addCleanup(self._stop_sink)
+
+    def _stop_sink(self):
+        try:
+            self.rp("sink", "stop")
+        except Exception:
+            pass
 
     def rp(self, *args, check=False):
         """Invoke the real CLI entry point as a subprocess (fresh process)."""
